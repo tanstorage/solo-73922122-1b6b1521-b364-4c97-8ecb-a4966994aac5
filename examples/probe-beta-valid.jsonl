@@ -1,0 +1,3 @@
+{"probe_id":"probe-beta","event_id":"evt-1001","host":"web-02.example.internal","time":1793000100,"rule":"malicious_dns_query"}
+{"probe_id":"probe-beta","event_id":"evt-1002","host":"db-02.example.internal","time":1793000120,"rule":"unauthorized_outbound"}
+{"probe_id":"probe-beta","event_id":"evt-1003","host":"web-02.example.internal","time":1793000144,"rule":"file_integrity_change"}

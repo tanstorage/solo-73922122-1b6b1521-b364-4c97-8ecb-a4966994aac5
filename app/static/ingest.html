@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>签名接收台 · 探针告警</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="console-page">
+  <header class="site-header console-header">
+    <a class="brand" href="/" aria-label="返回首页">
+      <span class="brand-mark" aria-hidden="true"><span></span></span>
+      <span class="brand-copy">
+        <strong>PROBE SENTRY</strong>
+        <small>签名接收台 / OPERATIONS</small>
+      </span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a class="nav-link" href="/">首页</a>
+      <a class="nav-link" href="#alerts-panel">告警</a>
+      <a class="nav-link nav-link-strong" href="#intake-panel">接收批次</a>
+    </nav>
+  </header>
+
+  <main class="console-main">
+    <section class="console-intro" aria-labelledby="console-title">
+      <div>
+        <p class="eyebrow"><span class="pulse-dot" aria-hidden="true"></span> SIGNED BATCH INTAKE</p>
+        <h1 id="console-title">签名接收台</h1>
+        <p class="lede">
+          选择一个探针，提交 UTF-8 JSONL 与独立签名。系统流式校验原始字节、逐行授权与事件一致性，
+          全部通过后才以单个短事务让整批告警可见。
+        </p>
+      </div>
+      <div class="intro-metrics" aria-label="系统限制">
+        <div class="intro-metric"><span>文件上限</span><strong id="limit-file">32 MiB</strong></div>
+        <div class="intro-metric"><span>单行上限</span><strong id="limit-line">4 KiB</strong></div>
+        <div class="intro-metric"><span>签名盐长</span><strong id="limit-salt">32 B</strong></div>
+      </div>
+    </section>
+
+    <div class="notice-bar" id="global-notice" hidden role="status" aria-live="polite"></div>
+
+    <section class="panel intake-panel" id="intake-panel" aria-labelledby="intake-title">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">01 · SIGNED IMPORT</p>
+          <h2 id="intake-title">提交签名告警批次</h2>
+        </div>
+        <span class="badge badge-ready" id="intake-state">WAITING</span>
+      </div>
+
+      <form id="ingest-form" novalidate>
+        <div class="probe-select-row">
+          <label class="field-label" for="probe-select">
+            探针 ID
+            <span class="field-note">每行 <code>probe_id</code> 必须与此一致</span>
+          </label>
+          <select id="probe-select" name="probe_id" class="select-input" required>
+            <option value="">正在载入探针配置…</option>
+          </select>
+          <p class="field-help" id="probe-hint">探针公钥与授权主机在首次启动时从本地配置载入。</p>
+        </div>
+
+        <div class="upload-grid">
+          <div class="upload-unit">
+            <label class="field-label" for="events-input">
+              JSONL 告警文件
+              <span class="field-note">UTF-8 · ≤ 32 MiB</span>
+            </label>
+            <label class="file-drop" id="events-drop" for="events-input">
+              <input id="events-input" name="events" type="file" hidden
+                     accept=".jsonl,.ndjson,application/x-ndjson,application/json,text/plain">
+              <span class="drop-icon" aria-hidden="true">↑</span>
+              <span class="drop-title" id="events-drop-title">拖入 JSONL，或点击选择</span>
+              <span class="drop-meta" id="events-drop-meta">每行最多 4 KiB，整文件流式读取</span>
+            </label>
+          </div>
+
+          <div class="upload-unit">
+            <label class="field-label" for="signature-input">
+              独立签名
+              <span class="field-note">RSA-PSS / SHA-256</span>
+            </label>
+            <label class="file-drop" id="signature-drop" for="signature-input">
+              <input id="signature-input" name="signature" type="file" hidden
+                     accept=".sig,.bin,.txt,.pem,application/octet-stream,text/plain">
+              <span class="drop-icon" aria-hidden="true">◇</span>
+              <span class="drop-title" id="signature-drop-title">拖入签名，或点击选择</span>
+              <span class="drop-meta" id="signature-drop-meta">原始二进制或 base64/PEM 文本</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="submit-row">
+          <button type="submit" class="button button-primary button-large" id="ingest-button" disabled>
+            <span class="button-label">流式校验并提交</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+          <p class="submit-note">
+            <span class="lock-dot" aria-hidden="true"></span>
+            验签与全文件检查通过前，暂存行永远不会出现在告警列表。
+          </p>
+        </div>
+      </form>
+
+      <div class="status-box status-success" id="ingest-success" hidden role="status" aria-live="polite">
+        <div class="status-head"><span class="status-check" aria-hidden="true">✓</span><strong>整批已原子提交</strong></div>
+        <p id="ingest-success-message"></p>
+        <div class="result-metrics">
+          <div><span>总行数</span><strong id="result-total">0</strong></div>
+          <div><span>新写入</span><strong id="result-imported">0</strong></div>
+          <div><span>跳过重复</span><strong id="result-skipped">0</strong></div>
+          <div><span>文件字节</span><strong id="result-bytes">0</strong></div>
+        </div>
+        <p class="batch-id" id="result-batch"></p>
+      </div>
+
+      <div class="error-box" id="ingest-error" hidden role="alert">
+        <div class="error-heading">
+          <span class="error-icon" aria-hidden="true">!</span>
+          <strong id="error-code">导入失败</strong>
+        </div>
+        <p id="error-message"></p>
+        <p class="error-meta" id="error-meta" hidden></p>
+      </div>
+
+      <div class="sample-strip">
+        <div class="sample-strip-head">
+          <div>
+            <p class="section-kicker">SAMPLE FIXTURES</p>
+            <h3>正常与篡改样例</h3>
+          </div>
+          <p>先用正常样例验证成功路径，再用篡改样例验证签名拦截。</p>
+        </div>
+        <div class="sample-grid">
+          <div class="sample-card">
+            <span class="sample-tag sample-tag-good">正常数据</span>
+            <strong>probe-alpha-valid.jsonl</strong>
+            <p>6 行，其中一条为完全相同的重复事件。</p>
+            <div class="sample-links">
+              <a href="/samples/probe-alpha-valid.jsonl" download>下载 JSONL</a>
+              <a href="/samples/probe-alpha-valid.sig" download>下载签名</a>
+            </div>
+          </div>
+          <div class="sample-card">
+            <span class="sample-tag sample-tag-bad">篡改数据</span>
+            <strong>probe-alpha-tampered.jsonl</strong>
+            <p>签名后修改了字段，请搭配正常签名上传。</p>
+            <div class="sample-links">
+              <a href="/samples/probe-alpha-tampered.jsonl" download>下载 JSONL</a>
+              <a href="/samples/probe-alpha-valid.sig" download>正常签名</a>
+            </div>
+          </div>
+          <div class="sample-card">
+            <span class="sample-tag">第二台探针</span>
+            <strong>probe-beta-valid.jsonl</strong>
+            <p>3 行正常告警，用于验证探针选择隔离。</p>
+            <div class="sample-links">
+              <a href="/samples/probe-beta-valid.jsonl" download>下载 JSONL</a>
+              <a href="/samples/probe-beta-valid.sig" download>下载签名</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel probes-panel" aria-labelledby="probes-title">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">02 · PROBE TRUST</p>
+          <h2 id="probes-title">探针与撤销状态</h2>
+        </div>
+        <p class="heading-note">撤销不可恢复，且会立即拦截尚未提交的导入。</p>
+      </div>
+      <div class="probe-card-grid" id="probe-list" aria-live="polite">
+        <p class="muted-line">正在读取探针配置…</p>
+      </div>
+    </section>
+
+    <section class="panel alerts-panel" id="alerts-panel" aria-labelledby="alerts-title">
+      <div class="panel-heading alerts-heading">
+        <div>
+          <p class="section-kicker">03 · VISIBLE ALERTS</p>
+          <h2 id="alerts-title">已提交告警</h2>
+        </div>
+        <div class="alerts-tools">
+          <label class="inline-label" for="alert-filter">探针筛选</label>
+          <select class="select-input select-small" id="alert-filter">
+            <option value="">全部探针</option>
+          </select>
+          <a class="text-link" href="/api/alerts" target="_blank" rel="noopener">JSON API</a>
+        </div>
+      </div>
+      <p class="panel-copy" id="alerts-summary">正在读取告警…</p>
+      <div class="table-wrap" id="alerts-table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th scope="col">时间（UTC）</th>
+              <th scope="col">探针</th>
+              <th scope="col">事件 ID</th>
+              <th scope="col">主机</th>
+              <th scope="col">规则</th>
+            </tr>
+          </thead>
+          <tbody id="alerts-body"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="alerts-empty" hidden>
+        <span class="empty-mark" aria-hidden="true">∅</span>
+        <h3>暂无可见告警</h3>
+        <p>完成一次签名批次后，提交成功的告警会出现在这里。</p>
+      </div>
+      <div class="pager" id="alerts-pager" hidden>
+        <button type="button" class="button button-ghost button-small" id="alerts-prev">← 上一页</button>
+        <span class="pager-info" id="alerts-page-info">第 1 / 1 页</span>
+        <button type="button" class="button button-ghost button-small" id="alerts-next">下一页 →</button>
+      </div>
+    </section>
+
+    <section class="panel imports-panel" aria-labelledby="imports-title">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">04 · IMPORT AUDIT</p>
+          <h2 id="imports-title">导入记录与失败原因</h2>
+        </div>
+        <a class="text-link" href="/api/imports" target="_blank" rel="noopener">JSON API</a>
+      </div>
+      <p class="panel-copy">失败批次不会留下半批告警；这里保留签名错误、行级拒绝与重复冲突等原因。</p>
+      <div class="table-wrap" id="imports-table-wrap">
+        <table class="data-table audit-table">
+          <thead>
+            <tr>
+              <th scope="col">完成时间</th>
+              <th scope="col">探针</th>
+              <th scope="col">状态</th>
+              <th scope="col">行数 / 新写入 / 跳过</th>
+              <th scope="col">失败原因</th>
+            </tr>
+          </thead>
+          <tbody id="imports-body"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="imports-empty" hidden>
+        <span class="empty-mark" aria-hidden="true">∅</span>
+        <h3>暂无导入记录</h3>
+        <p>成功或失败的导入批次都会记录在这里。</p>
+      </div>
+      <div class="pager" id="imports-pager" hidden>
+        <button type="button" class="button button-ghost button-small" id="imports-prev">← 上一页</button>
+        <span class="pager-info" id="imports-page-info">第 1 / 1 页</span>
+        <button type="button" class="button button-ghost button-small" id="imports-next">下一页 →</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>告警库由两个 Web 进程共享；导入只在最后短事务持写锁。撤销成功后，未提交批次必须在最终屏障处失败。</p>
+    <p>系统不提供“恢复探针”接口；已撤销探针的历史告警仍可审计。</p>
+  </footer>
+
+  <script src="/static/ingest.js" defer></script>
+</body>
+</html>

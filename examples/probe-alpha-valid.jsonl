@@ -1,0 +1,6 @@
+{"probe_id":"probe-alpha","event_id":"evt-0001","host":"web-01.example.internal","time":1793000000,"rule":"webshell_upload_attempt"}
+{"probe_id":"probe-alpha","event_id":"evt-0002","host":"db-01.example.internal","time":1793000015,"rule":"suspicious_sql_login"}
+{"probe_id":"probe-alpha","event_id":"evt-0003","host":"web-01.example.internal","time":1793000031,"rule":"reverse_shell_egress"}
+{"probe_id":"probe-alpha","event_id":"evt-0004","host":"db-01.example.internal","time":1793000047,"rule":"privilege_escalation"}
+{"probe_id":"probe-alpha","event_id":"evt-0005","host":"web-01.example.internal","time":1793000060,"rule":"credential_dumping"}
+{"probe_id":"probe-alpha","event_id":"evt-0005","host":"web-01.example.internal","time":1793000060,"rule":"credential_dumping"}

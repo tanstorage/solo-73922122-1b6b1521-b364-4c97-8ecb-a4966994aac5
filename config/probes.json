@@ -1,0 +1,20 @@
+{
+  "probes": [
+    {
+      "probe_id": "probe-alpha",
+      "public_key_file": "probe-alpha-public.pem",
+      "authorized_hosts": [
+        "web-01.example.internal",
+        "db-01.example.internal"
+      ]
+    },
+    {
+      "probe_id": "probe-beta",
+      "public_key_file": "probe-beta-public.pem",
+      "authorized_hosts": [
+        "web-02.example.internal",
+        "db-02.example.internal"
+      ]
+    }
+  ]
+}

@@ -1,8 +1,10 @@
-# 镜像 SUID / SGID 审计
+# 探针告警签名接收
 
-发布镜像前，用一个只读的 Docker 层合并视图找出最终仍带 **SUID** 或 **SGID** 位的普通文件，并定位最后一次写入该文件的镜像层。
+面向安全运营的签名告警接收台：拦截伪造 JSONL 与失陷探针，提供不可恢复的探针撤销，并将通过全部校验的告警批次以单个事务原子发布。
 
-页面使用 FastAPI，上传 `docker save` 导出的**单镜像 tar**，按 `manifest.json` 中 `Layers` 的顺序合并元数据。内置四层示例可直接扫描或下载。
+- 首页：<http://localhost:8000>
+- 签名接收页：<http://localhost:8000/ingest>
+- 健康检查：<http://localhost:8000/healthz>
 
 ## 快速启动
 
@@ -10,174 +12,306 @@
 docker compose up --build
 ```
 
-打开 <http://localhost:8000>。若 8000 端口被占用：
+浏览器打开 <http://localhost:8000>，点击“进入签名接收台”。
+
+若 8000 端口被占用：
 
 ```bash
 APP_PORT=8080 docker compose up --build
 ```
 
-停止：
+停止并保留数据：
 
 ```bash
 docker compose down
 ```
 
-Compose 以非 root 用户运行，容器根文件系统只读，丢弃全部 capabilities，并启用 `no-new-privileges`。上传暂存在容器内 `/tmp` tmpfs 中；归档和层**内容不会被解包**到宿主或容器文件系统。
+彻底删除本地测试数据：
+
+```bash
+docker compose down -v
+```
+
+Compose 启动 **2 个 Uvicorn Web 进程**，共享 `/data` 命名卷中的同一个 SQLite 告警库；一个一次性初始化容器先把卷目录交给非 root 应用用户，然后正式服务启动。暂存文件位于容器 `/tmp` tmpfs。应用容器以非 root 运行，根文件系统只读，丢弃全部 capabilities，启用 `no-new-privileges`。
 
 ## 页面功能
 
-- 拖拽或选择 `docker save` 单镜像 tar。
-- 一键扫描内置四层示例。
-- 列出最终 SUID/SGID 普通文件的路径、八进制权限、UID/GID、最后写入层。
-- 显示层顺序、manifest 索引和 layer digest。
-- 错误会明确区分：hardlink 不支持、越界路径、符号链接层引用、多个镜像、无效 manifest 等。
+签名接收页包含：
+
+1. **签名批次提交**：选择探针，上传 UTF-8 JSONL 与独立 RSA-PSS/SHA256 签名。
+2. **正常/篡改样例**：可直接下载，见下文“样例走查”。
+3. **探针撤销**：展示每台探针的公钥指纹、授权主机和撤销状态；撤销操作有不可恢复提示。
+4. **告警分页**：按事件时间倒序分页查看已提交告警，可按探针筛选。
+5. **导入审计**：分页查看成功/失败批次、行数、新写入、跳过数及完整失败原因与行号。
+
+## 输入约束
+
+| 项目 | 约束 |
+| --- | --- |
+| JSONL 文件 | UTF-8，最多 **32 MiB**（33,554,432 字节） |
+| 每行 | 最多 **4 KiB**（4,096 字节） |
+| 签名 | 独立文件，**RSA-PSS / SHA-256**，MGF1(SHA-256)，salt 长度固定 **32 字节** |
+| 必填字段 | `probe_id`、`event_id`、`host`、`time`、`rule` |
+| `time` | UTC 整数秒，64 位有符号整数 |
+| 探针绑定 | 每行 `probe_id` 必须等于表单选择的探针 ID |
+| 主机授权 | 每行 `host` 必须在该探针的本地授权主机列表内 |
+
+JSON 对象允许额外字段；重复键、`NaN`/`Infinity`、无效 Unicode 代理项、空行、非对象行均会被拒绝。签名同时接受原始二进制、base64 文本和 PEM 包裹的 base64。
+
+## 样例走查
+
+正常样例：
+
+- `examples/probe-alpha-valid.jsonl`：6 行，其中第 6 行与第 5 行完全相同。
+- `examples/probe-alpha-valid.sig`：对应签名。
+
+上传后应得到：`total_lines=6`、`imported_lines=5`、`skipped_lines=1`。重复上传同一批次应得到 `imported_lines=0`、`skipped_lines=6`，不会产生重复告警。
+
+篡改样例：
+
+- `examples/probe-alpha-tampered.jsonl`：签名生成后修改了首行 `rule`。
+- 请搭配 `examples/probe-alpha-valid.sig` 上传，应得到 `signature_invalid`，告警总数保持不变。
+
+也提供 `probe-beta-valid.jsonl` 与对应签名，用于验证探针选择隔离。
+
+### curl 示例
+
+```bash
+curl -sS \
+  -F probe_id=probe-alpha \
+  -F events=@examples/probe-alpha-valid.jsonl \
+  -F signature=@examples/probe-alpha-valid.sig \
+  http://localhost:8000/api/ingest | jq
+```
+
+```bash
+curl -sS \
+  -F probe_id=probe-alpha \
+  -F events=@examples/probe-alpha-tampered.jsonl \
+  -F signature=@examples/probe-alpha-valid.sig \
+  http://localhost:8000/api/ingest | jq
+```
+
+撤销探针：
+
+```bash
+curl -sS -X POST http://localhost:8000/api/probes/probe-alpha/revoke | jq
+```
+
+撤销后，该探针的任何新导入都会在读取前和最终提交屏障处被拒绝；已有历史告警仍可查询。
+
+## 原子性与并发设计
+
+### 流式读取
+
+`app/ingest.py` 以 64 KiB 块读取上传文件，同时更新 SHA-256；行缓冲上限固定为 4 KiB + 行尾，不会随行数增长而增长。每行只保留当前 JSON 对象，规范化后立即写入**独立暂存 SQLite 文件**。
+
+### 两阶段提交
+
+1. 全部行通过格式、探针、主机、时间、重复一致性检查；
+2. 对原始字节的签名验证通过；
+3. 打开业务库短写事务 `BEGIN IMMEDIATE`；
+4. 在写锁内再次检查 `revocations`；
+5. 与已提交告警做整批重复比对：字段相同则跳过，字段不同则回滚整批；
+6. 用 `INSERT ... SELECT` 从暂存库复制新告警，并写入成功导入审计；
+7. 提交。
+
+签名失败、行校验失败、重复冲突、撤销或进程中断时，业务事务回滚；暂存库位于业务库之外，不会留下半批可见告警。
+
+### 不阻塞撤销
+
+长耗时的读取、逐行校验、SHA-256 与暂存写入都不接触业务库，也不持有业务库写锁。撤销接口只做一条短小的 `BEGIN IMMEDIATE` 状态写入，因此在导入接收期间仍可迅速完成。
+
+### 撤销屏障
+
+- 撤销在 SQLite 中持久化，没有恢复接口。
+- 导入最终事务内重新读取撤销状态；若撤销已提交，整批失败。
+- 若导入已先取得写锁并提交，则撤销在其后生效——不存在“撤销已成功后仍有未提交导入提交成功”的窗口。
+- 重启时只重新载入配置里的公钥与授权主机，不删除 `revocations` 表；配置变化不能恢复已撤销探针。
+
+### 两进程共享
+
+Compose 使用 `uvicorn --workers 2` 与共享 `/data` 卷。SQLite 使用 WAL；每个请求独立连接，状态全部来自共享数据库，不存在仅进程内可见的撤销或告警状态。
+
+## 本地配置
+
+默认：`config/probes.json`
+
+```json
+{
+  "probes": [
+    {
+      "probe_id": "probe-alpha",
+      "public_key_file": "probe-alpha-public.pem",
+      "authorized_hosts": [
+        "web-01.example.internal",
+        "db-01.example.internal"
+      ]
+    },
+    {
+      "probe_id": "probe-beta",
+      "public_key_file": "probe-beta-public.pem",
+      "authorized_hosts": [
+        "web-02.example.internal",
+        "db-02.example.internal"
+      ]
+    }
+  ]
+}
+```
+
+- 相对 `public_key_file` 相对于配置文件所在目录。
+- 也可直接使用 `public_key_pem` 字段。
+- 公钥必须是 RSA 公钥。
+- 每次进程启动都会把当前公钥和主机白名单 upsert 到 SQLite，方便两个 Worker 读取一致状态；**不会清空撤销表**。
+
+修改配置后重启服务生效：
+
+```bash
+docker compose restart probe-alert-ingest
+```
+
+样例私钥没有进入仓库。需要重新生成一套公钥和签名样例时：
+
+```bash
+python tools/generate_examples.py
+```
+
+该脚本只在临时目录中持有私钥，生成后即删除。
+
+## 自己生成签名
+
+OpenSSL 示例：
+
+```bash
+openssl dgst -sha256 \
+  -sign probe-alpha-private.pem \
+  -sigopt rsa_padding_mode:pss \
+  -sigopt rsa_pss_saltlen:32 \
+  -out batch.sig batch.jsonl
+```
+
+Python 示例：
+
+```python
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+
+signature = private_key.sign(
+    payload,
+    padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32),
+    hashes.SHA256(),
+)
+```
 
 ## API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/` | 网页 |
-| `POST` | `/api/scan` | 上传 tar，表单字段 `archive`（兼容 `image` / `file`） |
-| `GET` | `/api/demo` | 扫描内置示例，返回与上传相同结构 |
-| `GET` | `/api/demo/archive` | 下载内置示例 tar |
+| `GET` | `/` | 首页，含签名接收页入口 |
+| `GET` | `/ingest`（`/alerts` 同页别名） | 签名接收、撤销、告警分页和导入审计页面 |
+| `POST` | `/api/ingest` | 表单字段 `probe_id`、`events`（JSONL）与 `signature` |
+| `GET` | `/api/alerts` | `page`、`page_size`（1–100）、可选 `probe_id` |
+| `GET` | `/api/imports` | `page`、`page_size`（1–100），含失败原因 |
+| `GET` | `/api/probes` | 探针、授权主机、公钥指纹、持久化撤销状态 |
+| `POST` | `/api/probes/{probe_id}/revoke` | 不可恢复地撤销探针 |
+| `GET` | `/api/samples` | 正常/篡改样例清单 |
+| `GET` | `/samples/{name}` | 下载样例 |
+| `GET` | `/api/meta` | 文件、行、salt 限制 |
 | `GET` | `/api/openapi.json` | OpenAPI 描述 |
-| `GET` | `/healthz` | 健康检查 |
+| `GET` | `/healthz` | 数据库可达性健康检查 |
 
-示例：
+导入兼容字段别名：`file` / `jsonl` 代替 `events`，`signature_file` / `sig` 代替 `signature`。
 
-```bash
-curl -sS -F archive=@examples/multilayer-demo.tar \
-  http://localhost:8000/api/scan | jq
-```
-
-响应节选：
+成功响应：
 
 ```json
 {
-  "source": "upload",
-  "image": {"tags": ["demo/privilege-audit:latest"], "config_path": "blobs/sha256/..."},
-  "layers": [
-    {"number": 1, "manifest_index": 0, "path": "blobs/sha256/...", "name": "sha256:..."}
-  ],
-  "files": [
-    {
-      "path": "/usr/bin/ping",
-      "relative_path": "usr/bin/ping",
-      "mode": 2541,
-      "mode_octal": "4755",
-      "permissions": "4755",
-      "uid": 0,
-      "gid": 0,
-      "special_bits": ["SUID"],
-      "file_type": "regular",
-      "last_layer": {
-        "number": 2,
-        "manifest_index": 1,
-        "path": "blobs/sha256/...",
-        "name": "sha256:..."
-      },
-      "layer_number": 2,
-      "layer_manifest_index": 1
-    }
-  ],
-  "summary": {
-    "layers_scanned": 4,
-    "privileged_files": 5,
-    "suid_files": 2,
-    "sgid_files": 3
-  }
+  "status": "committed",
+  "batch_id": "056dda2969374122957b2d613c772d22",
+  "probe_id": "probe-alpha",
+  "total_lines": 6,
+  "imported_lines": 5,
+  "skipped_lines": 1,
+  "size_bytes": 777,
+  "message": "签名与全文件校验通过，整批告警已原子提交。"
 }
 ```
 
-- `number` 是便于阅读的 1-based 层号。
-- `manifest_index` 是 `manifest.json` 中 `Layers` 数组的 0-based 下标。
-- `mode` 是权限位整数，`mode_octal` 是补足四位的八进制字符串（如 `4755`）。
-
-错误响应采用 FastAPI 的 `detail` 对象：
+错误响应使用 `detail` 对象：
 
 ```json
 {
   "detail": {
-    "code": "hardlink_unsupported",
-    "message": "不支持硬链接（hard link）：/hard（层 2）",
-    "path": "/hard",
-    "layer_number": 2,
-    "layer_path": "blobs/sha256/..."
+    "code": "duplicate_conflict",
+    "message": "第 6 行的 event_id 已存在且字段内容不同，整批拒绝",
+    "line": 6
   }
 }
 ```
 
-## 合并规则
+常见失败码：
 
-1. **严格按 manifest 顺序**逐层应用，先应用较低层，再应用较高层。
-2. **普通 whiteout**（如 `dir/.wh.file`）只从已继承的低层视图中删除 `dir/file` 及其子树。
-3. **opaque whiteout**（`dir/.wh..wh..opq`）只清空低层目录 `dir/` 的内容，目录节点和本层新增内容保留。
-4. **whiteout 与同层新增分离处理**：先对低层应用全部 whiteout，再添加本层条目。因此无论 `.wh.*` 在 tar 中排在本层新文件之前还是之后，结果一致。
-5. **目录/文件互换**：
-   - 上层普通文件、符号链接或特殊文件替换低层目录时，低层整棵子树被遮蔽。
-   - 上层目录替换低层普通文件时，低层文件消失，子项按新层建立。
-6. **符号链接不跟随**：只记录符号链接本身，不解析 `linkname`，更不会把目标文件或链接目标算作普通文件。
-7. **硬链接明确拒绝**：层内出现 hardlink 立即返回 `hardlink_unsupported`，而不是猜测目标元数据。
-8. **越界路径拒绝**：绝对路径、包含 `..` 的路径、NUL 字节路径都会失败，不会静默改写路径。
+| 失败码 | 含义 |
+| --- | --- |
+| `signature_invalid` | RSA-PSS 签名不匹配或格式无效 |
+| `probe_mismatch` | 行内 `probe_id` 与所选探针不一致 |
+| `host_unauthorized` | 行内主机不在该探针授权列表 |
+| `line_too_large` / `file_too_large` | 行或文件超过上限 |
+| `invalid_json` / `invalid_utf8` | JSONL 格式错误 |
+| `duplicate_conflict` | 同探针同 `event_id` 已存在但字段不同 |
+| `probe_revoked` | 探针已撤销 |
+| `storage_busy` | 最终短事务等待 SQLite 写锁超时 |
 
-最终仅列出满足以下条件的条目：
-
-- 类型为普通文件（`regular file`）；
-- 权限位包含 `0o4000`（SUID）或 `0o2000`（SGID）；
-- 未被更高层删除、遮蔽或替换。
-
-## 安全设计
-
-- 只调用 `tarfile` 读取外层归档与内层层 tar 的头/成员流。
-- 没有 `extract()`、`extractall()`，也不会写入任何解包后的文件。
-- 层 tar 通过流式 `r|*` 读取，支持未压缩、gzip、xz、bz2 层。
-- 所有成员路径在合并前校验；符号链接层引用会被拒绝。
-- 不解析符号链接、不跟随硬链接。
-- 服务容器只读、非 root、`cap_drop: ALL`。
-- UI 使用 `textContent` 渲染扫描结果，避免镜像内恶意路径造成 XSS；并设置 CSP。
-
-> 上传文件本身由 ASGI/Starlette 暂存（默认超过 1 MiB 会落到 `/tmp`）。Compose 把 `/tmp` 挂为 tmpfs；这只是上传字节的暂存，不是归档解包。若扫描较大的真实镜像，可通过 `UPLOAD_TMP_SIZE` 调整 tmpfs 大小。
+告警分页响应包含 `items`、`page`、`page_size`、`total`、`pages`、`has_prev`、`has_next`。
 
 ## 本地开发与测试
-
-无需 Docker 的合并逻辑测试：
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-运行 Web 服务：
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+
+python3 -m unittest discover -s tests -v
 ```
 
-重新生成内置示例：
+本地运行两个 Worker：
 
 ```bash
-python3 app/sample.py examples/multilayer-demo.tar
+ALERT_DB_PATH=./data/alerts.sqlite3 \
+STAGING_DIR=/tmp/probe-alert-staging \
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
 ```
+
+环境变量：
+
+| 变量 | 默认值 |
+| --- | --- |
+| `PROBE_CONFIG` | `<项目>/config/probes.json` |
+| `ALERT_DB_PATH` | `<项目>/data/alerts.sqlite3` |
+| `STAGING_DIR` | 系统临时目录下的 `probe-alert-staging` |
+| `MAX_EVENTS_BYTES` | `33554432` |
+| `SQLITE_BUSY_TIMEOUT_MS` | `30000` |
+| `APP_PORT` | Compose 端口，默认 `8000` |
+| `INGEST_TMP_SIZE` | Compose `/tmp` tmpfs 大小，默认 `512m` |
 
 ## 目录结构
 
 ```text
 app/
-  main.py        FastAPI 路由、上传与错误响应
-  merger.py      只读 tar 解析、层合并、SUID/SGID 收集
-  sample.py      内存中生成四层 docker-save 示例
-  static/        网页、样式和前端逻辑
-examples/        内置示例 tar 与说明
-tests/           合并规则与安全边界测试
+  main.py       FastAPI 路由、页面入口、生命周期
+  config.py     本地探针/公钥/主机白名单加载
+  db.py         SQLite schema、撤销、告警与导入分页
+  ingest.py     流式哈希、逐行校验、签名、暂存与原子提交
+  static/       首页、签名接收页、样式与前端逻辑
+config/         两台探针公钥及 probes.json
+examples/       正常、篡改、第二探针样例与签名
+tests/          流式校验、重复、原子性、撤销与 API 测试
+tools/          样例与密钥生成脚本
 Dockerfile
 docker-compose.yml
 ```
 
-## 已知边界
+## 部署提示
 
-- 仅支持单镜像 `docker save` 格式；多镜像归档会明确拒绝。
-- 硬链接不受支持（按需求明确报错），因此含 hardlink 的镜像不会给出部分结果。
-- 不解析镜像 config 中的 `User`、capabilities 或 seccomp 配置；本工具审计的是文件权限位。
-- 不把文件名解析到容器用户数据库，故 UID/GID 以数字展示。
+控制台本身不实现用户登录。生产环境应将其置于受控运维网络、VPN 或带身份认证的反向代理之后，并限制对撤销接口的访问。公钥配置应按权限保护；私钥只应保存在探针侧，不应放入本服务。

@@ -4,138 +4,180 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>镜像 SUID / SGID 审计</title>
+  <title>探针告警签名接收 · Probe Alert Ingest</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-  <header class="hero">
-    <div class="hero-inner">
-      <div class="brand-mark" aria-hidden="true">
-        <span class="brand-dot"></span>
-        <span class="brand-ring"></span>
-      </div>
-      <div class="hero-copy">
-        <p class="eyebrow">Docker Image Privilege Audit</p>
-        <h1>镜像 SUID / SGID 审计</h1>
-        <p class="lede">
-          上传 <code>docker save</code> 导出的单镜像 tar。按 <code>manifest.json</code>
-          的 <code>Layers</code> 顺序只读合并文件元数据，定位最终仍保留高权限位的普通文件。
-        </p>
-        <div class="hero-points" aria-label="安全特性">
-          <span>不落盘解包</span>
-          <span>不跟随符号链接</span>
-          <span>拒绝越界路径</span>
-          <span>精确到写入层</span>
-        </div>
-      </div>
-    </div>
+<body class="home-page">
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="探针告警签名接收首页">
+      <span class="brand-mark" aria-hidden="true"><span></span></span>
+      <span class="brand-copy">
+        <strong>PROBE SENTRY</strong>
+        <small>告警接收与探针信任控制</small>
+      </span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a class="nav-link" href="/ingest">签名接收台</a>
+      <a class="nav-link" href="#workflow">工作方式</a>
+      <a class="nav-link nav-link-strong" href="/ingest">打开控制台</a>
+    </nav>
   </header>
 
-  <main>
-    <section class="panel upload-panel" aria-labelledby="upload-title">
-      <div class="panel-heading">
-        <div>
-          <p class="section-kicker">01 · 输入</p>
-          <h2 id="upload-title">选择镜像归档</h2>
+  <main class="home-main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="pulse-dot" aria-hidden="true"></span> SIGNED INGESTION CHANNEL</p>
+          <h1 id="hero-title">只接收签名可信的<br><em>探针告警</em>。</h1>
+          <p class="lede">
+            安全运营人员上传探针 ID、UTF-8 JSONL 与独立 RSA-PSS/SHA256 签名。
+            原始字节分块哈希、逐行校验、整批原子提交；伪造文件与失陷探针都被挡在可视告警之外。
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary button-large" href="/ingest">
+              进入签名接收台
+              <span aria-hidden="true">→</span>
+            </a>
+            <a class="button button-quiet button-large" href="#workflow">查看校验流程</a>
+          </div>
+          <div class="trust-strip" aria-label="关键安全属性">
+            <span><i aria-hidden="true">01</i> RSA-PSS · SHA-256</span>
+            <span><i aria-hidden="true">02</i> 32 MiB 上限</span>
+            <span><i aria-hidden="true">03</i> 撤销不可恢复</span>
+          </div>
         </div>
-        <button type="button" class="button button-ghost" id="demo-button">
-          扫描内置多层示例
-        </button>
-      </div>
 
-      <form id="scan-form" novalidate>
-        <label class="drop-zone" id="drop-zone" for="archive-input">
-          <input id="archive-input" name="archive" type="file"
-                 accept=".tar,application/x-tar,application/octet-stream" hidden>
-          <span class="drop-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="34" height="34" role="img">
-              <path d="M12 16V4m0 0-4 4m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"
-                    fill="none" stroke="currentColor" stroke-width="1.7"
-                    stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-          <span class="drop-title" id="drop-title">拖拽 tar 到这里，或点击选择文件</span>
-          <span class="drop-hint" id="drop-hint">单镜像 docker save tar · 内容仅在内存中解析</span>
-        </label>
-
-        <div class="actions">
-          <span class="file-pill" id="file-pill" hidden></span>
-          <button type="submit" class="button button-primary" id="scan-button" disabled>
-            <span class="button-label">开始扫描</span>
-            <span class="spinner" aria-hidden="true"></span>
-          </button>
-          <a class="button button-link" href="/api/demo/archive" download>
-            下载示例 tar
-          </a>
-        </div>
-      </form>
-
-      <div class="status-box" id="status-box" hidden role="status" aria-live="polite"></div>
-      <div class="error-box" id="error-box" hidden role="alert">
-        <div class="error-heading">
-          <span class="error-icon" aria-hidden="true">!</span>
-          <strong id="error-code">扫描失败</strong>
-        </div>
-        <p id="error-message"></p>
-        <p class="error-meta" id="error-meta" hidden></p>
+        <aside class="hero-console" aria-label="实时探针状态">
+          <div class="console-top">
+            <span class="console-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>TRUST STATE / LIVE</span>
+          </div>
+          <div class="console-body">
+            <p class="console-label">已接收告警</p>
+            <p class="console-number" id="home-total">—</p>
+            <div class="console-rule" aria-hidden="true"></div>
+            <p class="console-label">探针信任状态</p>
+            <div class="home-probes" id="home-probes" aria-live="polite">
+              <p class="muted-line">正在读取本地信任配置…</p>
+            </div>
+          </div>
+          <div class="console-foot">
+            <span>SQLite WAL</span>
+            <span>ATOMIC BATCHES</span>
+            <span>2 WORKERS</span>
+          </div>
+        </aside>
       </div>
     </section>
 
-    <section class="results" id="results" hidden aria-labelledby="results-title">
-      <div class="panel result-head">
+    <section class="workflow-section" id="workflow" aria-labelledby="workflow-title">
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">CHAIN OF TRUST</p>
+          <h2 id="workflow-title">一条告警，四道闸门</h2>
+        </div>
+        <p>任何一道校验失败，批次都不会留下可见记录。</p>
+      </div>
+      <div class="workflow-grid">
+        <article class="workflow-card">
+          <span class="workflow-index">01</span>
+          <h3>原始字节签名</h3>
+          <p>分块读取 JSONL 并同步计算 SHA-256，独立签名使用 RSA-PSS，MGF1(SHA-256)，salt 固定 32 字节。</p>
+        </article>
+        <article class="workflow-card">
+          <span class="workflow-index">02</span>
+          <h3>绑定探针与主机</h3>
+          <p>每行 <code>probe_id</code> 必须匹配所选探针；<code>host</code> 必须落在该探针的本地授权主机列表内。</p>
+        </article>
+        <article class="workflow-card">
+          <span class="workflow-index">03</span>
+          <h3>全文件一致性</h3>
+          <p>单行不超过 4 KiB，必填字段与 UTC 整数秒严格校验。同事件字段相同则跳过，字段不同则整批拒绝。</p>
+        </article>
+        <article class="workflow-card">
+          <span class="workflow-index">04</span>
+          <h3>撤销屏障</h3>
+          <p>暂存区在业务库之外。最终短事务内再次检查撤销状态，撤销成功后未提交导入必然失败。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="home-split" aria-labelledby="trust-title">
+      <div class="panel trust-panel">
         <div class="panel-heading">
           <div>
-            <p class="section-kicker">02 · 结果</p>
-            <h2 id="results-title">最终保留特权位的普通文件</h2>
-            <p class="result-subtitle" id="result-subtitle"></p>
+            <p class="section-kicker">LOCAL INVENTORY</p>
+            <h2 id="trust-title">两台探针，各自的主机边界</h2>
           </div>
-          <div class="summary-cards" aria-label="统计">
-            <div class="metric"><span>扫描层数</span><strong id="metric-layers">0</strong></div>
-            <div class="metric"><span>特权文件</span><strong id="metric-files">0</strong></div>
-            <div class="metric metric-suid"><span>SUID</span><strong id="metric-suid">0</strong></div>
-            <div class="metric metric-sgid"><span>SGID</span><strong id="metric-sgid">0</strong></div>
+          <a class="text-link" href="/ingest">管理探针 →</a>
+        </div>
+        <p class="panel-copy">
+          首次启动从本地 <code>config/probes.json</code> 载入两台探针公钥和授权主机。
+          撤销状态独立写入 SQLite，重启、替换配置或重新加载公钥都不会恢复已撤销探针。
+        </p>
+        <div class="trust-detail-grid" id="home-trust-details">
+          <div class="trust-detail">
+            <span class="trust-icon" aria-hidden="true">KEY</span>
+            <strong>独立公钥</strong>
+            <p>每台探针使用自己的 RSA 公钥验证，不共享信任根。</p>
+          </div>
+          <div class="trust-detail">
+            <span class="trust-icon" aria-hidden="true">HOST</span>
+            <strong>主机白名单</strong>
+            <p>逐行比对授权主机，跨主机或伪造 probe_id 立即拒绝。</p>
+          </div>
+          <div class="trust-detail">
+            <span class="trust-icon" aria-hidden="true">REV</span>
+            <strong>不可逆撤销</strong>
+            <p>撤销在短写事务中落盘；没有恢复入口，也不会被配置覆盖。</p>
           </div>
         </div>
-        <p class="safety-note" id="safety-note" hidden></p>
       </div>
 
-      <div class="panel layers-panel">
-        <div class="layers-title-row">
-          <h3>层顺序</h3>
-          <span class="muted">按 manifest.json 的 Layers 数组</span>
+      <div class="panel demo-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">READY TO TEST</p>
+            <h2>正常与篡改样例</h2>
+          </div>
+          <span class="badge badge-ready">DEMO</span>
         </div>
-        <ol class="layer-strip" id="layer-strip"></ol>
-      </div>
-
-      <div class="panel table-panel">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">文件路径</th>
-                <th scope="col">八进制权限</th>
-                <th scope="col">特殊位</th>
-                <th scope="col">UID / GID</th>
-                <th scope="col">最后写入层</th>
-              </tr>
-            </thead>
-            <tbody id="findings-body"></tbody>
-          </table>
+        <div class="sample-list">
+          <div class="sample-row">
+            <span class="sample-tag sample-tag-good">正常</span>
+            <div>
+              <strong>probe-alpha-valid.jsonl</strong>
+              <p>6 行告警，含一条完全相同的重复事件。</p>
+            </div>
+            <a class="text-link" href="/samples/probe-alpha-valid.jsonl" download>下载数据</a>
+          </div>
+          <div class="sample-row">
+            <span class="sample-tag">签名</span>
+            <div>
+              <strong>probe-alpha-valid.sig</strong>
+              <p>与正常样例匹配的 RSA-PSS 独立签名。</p>
+            </div>
+            <a class="text-link" href="/samples/probe-alpha-valid.sig" download>下载签名</a>
+          </div>
+          <div class="sample-row">
+            <span class="sample-tag sample-tag-bad">篡改</span>
+            <div>
+              <strong>probe-alpha-tampered.jsonl</strong>
+              <p>签名后修改字段，与正常签名一起上传应被拒绝。</p>
+            </div>
+            <a class="text-link" href="/samples/probe-alpha-tampered.jsonl" download>下载数据</a>
+          </div>
         </div>
-        <div class="empty-state" id="empty-state" hidden>
-          <span class="empty-check" aria-hidden="true">✓</span>
-          <h3>未发现 SUID / SGID 普通文件</h3>
-          <p>最终合并视图中没有保留高权限位的普通文件。</p>
-        </div>
+        <a class="button button-outline button-block" href="/ingest">带上样例前往接收台</a>
       </div>
     </section>
   </main>
 
-  <footer>
-    <p>只读取 tar 头与层内元数据；不会调用解包，也不会将层内容写入宿主文件系统。</p>
-    <p>白名单之外的路径、硬链接和不安全的层引用会被明确拒绝。</p>
+  <footer class="site-footer">
+    <p>RSA-PSS 验签 · 固定 4 KiB 行边界 · SQLite WAL 原子批次 · 两进程共享撤销状态</p>
+    <p>告警数据仅保存在本地卷；撤销成功后没有恢复接口。</p>
   </footer>
 
-  <script src="/static/app.js" defer></script>
+  <script src="/static/home.js" defer></script>
 </body>
 </html>

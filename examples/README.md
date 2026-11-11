@@ -1,19 +1,27 @@
-# 内置多层示例
+# 签名样例
 
-`multilayer-demo.tar` 是 `docker save` 格式的单镜像归档，由
-`app/sample.py` 在内存中确定性生成（也可重新生成）：
+所有 JSONL 均为 UTF-8、每行不超过 4 KiB，每行至少包含：
 
-```bash
-python3 app/sample.py examples/multilayer-demo.tar
+```json
+{"probe_id":"...","event_id":"...","host":"...","time":1234567890,"rule":"..."}
 ```
 
-它包含 4 个层，覆盖以下合并规则：
-
-| 层 | 示例内容 |
+| 文件 | 用途 |
 | --- | --- |
-| L1 | `usr/bin/passwd`、`usr/bin/sudo` 为 SUID；`usr/bin/wall` 为 SGID |
-| L2 | whiteout 删除低层 `passwd`，同层新增安全版 `passwd`；`sudo` 改为 0755；新增 SUID `ping` |
-| L3 | `opt/tools/legacy/` 使用 opaque whiteout；`var/lib/cache/` 从目录被换成 SGID 普通文件 |
-| L4 | `usr/local/bin/oldtool` 从普通文件被换成目录，子项 `wrapper` 为 SUID；符号链接不被跟随 |
+| `probe-alpha-valid.jsonl` | 正常样例，6 行，含一条完全相同的重复事件 |
+| `probe-alpha-valid.sig` | 与正常样例匹配的 RSA-PSS/SHA256 签名，salt 长度 32 |
+| `probe-alpha-tampered.jsonl` | 签名后修改首行 rule；搭配正常签名上传应验签失败 |
+| `probe-beta-valid.jsonl` | 第二台探针的正常样例 |
+| `probe-beta-valid.sig` | probe-beta 对应签名 |
 
-最终应报告 5 个文件：2 个 SUID、3 个 SGID。
+在签名接收页中选择：
+
+- 正常：探针 `probe-alpha` + `probe-alpha-valid.jsonl` + `probe-alpha-valid.sig`
+- 篡改：探针 `probe-alpha` + `probe-alpha-tampered.jsonl` + `probe-alpha-valid.sig`
+- 第二台：探针 `probe-beta` + `probe-beta-valid.jsonl` + `probe-beta-valid.sig`
+
+样例签名由一次性开发的私钥生成；仓库不保存对应私钥。重新生成请运行：
+
+```bash
+python tools/generate_examples.py
+```

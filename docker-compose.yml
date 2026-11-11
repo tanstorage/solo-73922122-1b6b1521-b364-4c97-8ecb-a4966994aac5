@@ -1,16 +1,46 @@
 services:
-  privilege-audit:
+  probe-alert-storage-init:
+    image: probe-alert-ingest:local
     build:
       context: .
       dockerfile: Dockerfile
-    image: docker-privilege-audit:local
+    user: "0:0"
+    command: ["chown", "-R", "app:app", "/data"]
+    volumes:
+      - alert-data:/data
+    read_only: true
+    network_mode: none
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  probe-alert-ingest:
+    image: probe-alert-ingest:local
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "${APP_PORT:-8000}:8000"
+    volumes:
+      - alert-data:/data
+      - ./config:/config:ro
     environment:
-      TMPDIR: /tmp
+      PROBE_CONFIG: /config/probes.json
+      ALERT_DB_PATH: /data/alerts.sqlite3
+      STAGING_DIR: /tmp/probe-alert-staging
+      MAX_EVENTS_BYTES: "33554432"
+    depends_on:
+      probe-alert-storage-init:
+        condition: service_completed_successfully
     read_only: true
     tmpfs:
-      - "/tmp:size=${UPLOAD_TMP_SIZE:-512m},mode=1777"
+      - "/tmp:size=${INGEST_TMP_SIZE:-512m},mode=1777"
     cap_drop:
       - ALL
     security_opt:
@@ -21,9 +51,12 @@ services:
       test:
         - CMD
         - python
-        - -c
+        - "-c"
         - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).read()"
-      interval: 30s
+      interval: 20s
       timeout: 5s
-      retries: 3
+      retries: 4
       start_period: 10s
+
+volumes:
+  alert-data:
